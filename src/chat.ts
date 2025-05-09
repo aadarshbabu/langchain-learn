@@ -8,6 +8,13 @@ import { RecursiveCharacterTextSplitter } from "langchain/text_splitter";
 import { MemoryVectorStore } from "langchain/vectorstores/memory";
 import { createRetrievalChain } from "langchain/chains/retrieval";
 import { createHistoryAwareRetriever } from "langchain/chains/history_aware_retriever";
+import * as uuidV4 from "uuid";
+import {
+  Annotation,
+  MemorySaver,
+  messagesStateReducer,
+  StateGraph,
+} from "@langchain/langgraph";
 
 import * as dotenv from "dotenv";
 import { StringOutputParser } from "@langchain/core/output_parsers";
@@ -22,6 +29,7 @@ import { doc, doc1 } from "./docs";
 import { DocumentInterface } from "@langchain/core/dist/documents/document";
 import { VectorStoreRetriever } from "@langchain/core/dist/vectorstores";
 import { Runnable, RunnableConfig } from "@langchain/core/runnables";
+import { IterableReadableStream } from "@langchain/core/utils/stream";
 dotenv.config();
 
 type VecStoreRetriever = Runnable<
@@ -56,24 +64,24 @@ async function setupRetriever() {
     embedding
   );
 
-  return vectorStore.asRetriever({ k: 3 });
+  return vectorStore.asRetriever({ k: 1 });
 }
 
 // 2. Create a history-aware retriever
 async function setupHistoryAwareRetriever(retriever: VectorStoreRetriever) {
   const rephrasePrompt = ChatPromptTemplate.fromMessages([
+    [
+      "system",
+      "Given the above conversation, generate a search query to look up in order to get information relevant to the conversation.",
+    ],
     new MessagesPlaceholder("chat_history"),
     ["human", "{input}"],
-    [
-      "user",
-      "Given the above conversation, generate a search query to look up in order to get information relevant to the conversation",
-    ],
   ]);
 
   return createHistoryAwareRetriever({
     llm: model,
-    retriever,
     rephrasePrompt,
+    retriever,
   });
 }
 
@@ -100,8 +108,16 @@ async function setupQAChain(retriever: VecStoreRetriever) {
   });
 }
 
-// 4. Chat loop
-async function startChat() {
+const GraphAnnotation = Annotation.Root({
+  input: Annotation<string>,
+  chat_history: Annotation<BaseMessage[]>({
+    reducer: messagesStateReducer,
+    default: () => [],
+  }),
+  data: Annotation<IterableReadableStream<string>>,
+});
+
+const modal = async (state: typeof GraphAnnotation.State) => {
   const retriever = await setupRetriever();
 
   const historyAware = await setupHistoryAwareRetriever(retriever);
@@ -117,29 +133,57 @@ async function startChat() {
     allowPartial: true,
   });
 
+  const response = await qaChain.stream({
+    input: state.input,
+    chat_history: trimChatHistory,
+  });
+
+  let answer = "";
+  let context = "";
+  process.stdout.write("Agent: ");
+  for await (const chunk of response) {
+    if (chunk.answer) {
+      process.stdout.write(chunk.answer);
+      answer += chunk.answer;
+    }
+    if (chunk.context) {
+      context += chunk.context;
+    }
+  }
+
+  chatHistory.push(new HumanMessage(state.input));
+  chatHistory.push(new AIMessage(answer));
+
+  return {
+    data: response,
+    chat_history: chatHistory,
+    context,
+  };
+};
+
+const output = (state: typeof GraphAnnotation.State) => {};
+
+const graph = new StateGraph(GraphAnnotation)
+  .addNode("modal", modal)
+  .addEdge("__start__", "modal")
+  .addEdge("modal", "__end__");
+
+const memory2 = new MemorySaver();
+const app2 = graph.compile({ checkpointer: memory2 });
+
+// 4. Chat loop
+async function startChat() {
   async function ask() {
+    const threadId2 = uuidV4.v4();
+    const config2 = { configurable: { thread_id: threadId2 } };
+
     rl.question("User: ", async (input) => {
       if (input.toLowerCase() === "exit") {
         rl.close();
         return;
       }
 
-      const response = await qaChain.stream({
-        input,
-        chat_history: trimChatHistory,
-      });
-
-      let answer = "";
-      process.stdout.write("Agent: ");
-      for await (const chunk of response) {
-        if (chunk.answer) {
-          process.stdout.write(chunk.answer);
-          answer += chunk.answer;
-        }
-      }
-
-      chatHistory.push(new HumanMessage(input));
-      chatHistory.push(new AIMessage(answer));
+      app2.invoke({ input: input }, config2);
 
       console.log("\n");
       ask();
