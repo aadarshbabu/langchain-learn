@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI Chat</title>
+    <!-- Prism dark theme -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/prismjs/themes/prism-tomorrow.css" />
+
+    <!-- Prism core -->
+    <script src="https://cdn.jsdelivr.net/npm/prismjs/prism.min.js"></script>
+
+    <!-- Language support -->
+    <script src="https://cdn.jsdelivr.net/npm/prismjs/components/prism-javascript.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/prismjs/components/prism-jsx.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/prismjs/components/prism-typescript.min.js"></script>
+
+    <!-- Markdown support -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+
+    <script>
+        marked.setOptions({
+            highlight: function (code, lang) {
+                if (Prism.languages[lang]) {
+                    return Prism.highlight(code, Prism.languages[lang], lang);
+                } else {
+                    return code; // fallback
+                }
+            }
+        });
+    </script>
+
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family: "Segoe UI", sans-serif;
+            background-color: #f2f4f8;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .chat-container {
+            background-color: white;
+            border-radius: 10px;
+            width: 100%;
+            max-width: 700px;
+            height: 90vh;
+            display: flex;
+            flex-direction: column;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
+        }
+
+        .chat-header {
+            background-color: #6f42c1;
+            color: white;
+            padding: 16px;
+            font-size: 1.2rem;
+            font-weight: bold;
+            text-align: center;
+        }
+
+        .chat-messages {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .chat-bubble {
+            max-width: 75%;
+            padding: 12px 16px;
+            border-radius: 12px;
+            line-height: 1.4;
+            word-wrap: break-word;
+            box-shadow: 0 3px 8px rgba(0, 0, 0, 0.05);
+        }
+
+        .user {
+            background-color: #d1e7dd;
+            align-self: flex-end;
+        }
+
+        .assistant {
+            background-color: #f1f1f1;
+            align-self: flex-start;
+        }
+
+        .chat-input {
+            display: flex;
+            border-top: 1px solid #ddd;
+        }
+
+        .chat-input input {
+            flex: 1;
+            padding: 14px;
+            border: none;
+            font-size: 1rem;
+            outline: none;
+        }
+
+        .chat-input button {
+            padding: 14px 20px;
+            background-color: #6f42c1;
+            color: white;
+            border: none;
+            cursor: pointer;
+            font-size: 1rem;
+        }
+
+        .chat-input button:hover {
+            background-color: #5931a9;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="chat-container">
+        <div class="chat-header">💬 AI Chat</div>
+        <div id="chat-messages" class="chat-messages"></div>
+        <form id="chat-form" class="chat-input">
+            <input type="text" id="chat-input" placeholder="Type your message..." autocomplete="off" />
+            <button type="submit">Send</button>
+        </form>
+    </div>
+
+    <script>
+        const chatMessages = document.getElementById("chat-messages");
+        const chatForm = document.getElementById("chat-form");
+        const chatInput = document.getElementById("chat-input");
+
+        const appendMessage = (text, sender = "user") => {
+            const div = document.createElement("div");
+            div.classList.add("chat-bubble", sender);
+
+            // Use markdown rendering
+            div.innerHTML = marked.parse(text);
+            chatMessages.appendChild(div);
+            chatMessages.scrollTop = chatMessages.scrollHeight;
+            return div; // return for appending stream
+        };
+
+        chatForm.addEventListener("submit", async (e) => {
+            e.preventDefault();
+            const input = chatInput.value.trim();
+            if (!input) return;
+
+            appendMessage(input, "user");
+            chatInput.value = "";
+
+            const responseDiv = appendMessage("", "assistant");
+
+            try {
+                const response = await fetch("http://localhost:3000/chat", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({ input })
+                });
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder("utf-8");
+                let buffer = "";
+
+                const readChunk = async () => {
+                    const { done, value } = await reader.read();
+                    if (done) return;
+
+                    const chunk = decoder.decode(value);
+                    const line = chunk
+                    console.log('lines', line)
+
+                    // for (let line of lines) {
+                    if (!line.startsWith('event')) {
+
+                        const content = line
+                        if (content === "[DONE]") return;
+
+                        buffer += content
+                        responseDiv.innerHTML = marked.parse(buffer);
+                        Prism.highlightAll(); // Good!
+                        chatMessages.scrollTop = chatMessages.scrollHeight;
+                    }
+
+                    // }
+
+                    // // Optional: filter out 'event:', 'data:' etc.
+                    // const cleaned = chunk
+                    //     .split('\n')
+                    //     .filter(line => line.startsWith("data: "))
+                    //     .map(line => line.replace("data: ", ""))
+                    //     .join(" ");
+
+                    // buffer += cleaned;
+                    // responseDiv.innerHTML = marked.parse(buffer);
+                    // chatMessages.scrollTop = chatMessages.scrollHeight;
+                    readChunk(); // continue
+                };
+
+                readChunk();
+            } catch (err) {
+                responseDiv.innerHTML = `< i style = "color: red;" > Error: ${err.message}</i >`;
+            }
+        });
+    </script>
+
+</body>
+
+</html>

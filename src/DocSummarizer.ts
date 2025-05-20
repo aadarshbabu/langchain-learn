@@ -51,6 +51,11 @@ const documentLoaderAndStore = async () => {
   const embedding = new MistralAIEmbeddings();
 
   const store = await MemoryVectorStore.fromDocuments(splitDocs, embedding);
+  const res = await store.similaritySearch("what is langchain?", 2, (doc) => {
+    console.log(doc.pageContent);
+    return false;
+  });
+  console.log("doc", res);
 
   const retriever = store.asRetriever({ k: 1 });
 

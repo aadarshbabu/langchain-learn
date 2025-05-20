@@ -32,6 +32,8 @@ import { DocumentInterface } from "@langchain/core/dist/documents/document";
 import { VectorStoreRetriever } from "@langchain/core/dist/vectorstores";
 import { Runnable, RunnableConfig } from "@langchain/core/runnables";
 import { IterableReadableStream } from "@langchain/core/utils/stream";
+import express from "express";
+import path from "path";
 dotenv.config();
 
 type VecStoreRetriever = Runnable<
@@ -96,7 +98,6 @@ const shouldRetrieve = async (state: typeof GraphAnnotation.State) => {
       "system",
       "You are a smart assistant that decides if retrieval from a vector store is needed. Our vector database store the data into coding related documents. specifically 'React' or other programming language if user ask coding and programming related question then retrieval is needed.",
     ],
-    new MessagesPlaceholder("chat_history"),
     [
       "human",
       "User query: {input}\n\nShould we search the vector store to help answer this? Reply only 'yes' or 'no'.",
@@ -110,11 +111,10 @@ const shouldRetrieve = async (state: typeof GraphAnnotation.State) => {
     .pipe(model)
     .pipe(stringParser)
     .invoke({
-      chat_history: chatHistory,
       input: state.input,
     });
 
-  console.log("message", message);
+  console.log("should Retrieve", message);
 
   return {
     decision: message.toLowerCase() === "yes" ? true : false,
@@ -241,7 +241,7 @@ const chatHistoryVectorDatabase = async () => {
     }))
   );
 
-  return chatStore.asRetriever();
+  return chatStore.asRetriever({ k: 1 });
 };
 
 async function generalQNA(state: typeof GraphAnnotation.State) {
@@ -321,26 +321,33 @@ const modal = async (state: typeof GraphAnnotation.State) => {
 
 const output = async (state: typeof GraphAnnotation.State) => {
   // Make a sse to send the response to the client.
-  let answer = "";
-  let context = "";
-  process.stdout.write("Agent: ");
+  // let answer = "";
+  // let context = "";
+  // process.stdout.write("Agent: ");
 
-  for await (const chunk of state.data) {
-    // console.log("chunks", chunk);
-    if (chunk.answer) {
-      process.stdout.write(chunk.answer);
-      answer += chunk.answer;
-    } else if (typeof chunk === "string") {
-      answer += chunk;
-      process.stdout.write(chunk);
-    }
-    if (chunk.context) {
-      context += chunk.context;
-    }
-  }
+  // for await (const chunk of state.data) {
+  //   // console.log("chunks", chunk);
+  //   if (chunk.answer) {
+  //     process.stdout.write(chunk.answer);
+  //     answer += chunk.answer;
+  //   } else if (typeof chunk === "string") {
+  //     answer += chunk;
+  //     process.stdout.write(chunk);
+  //   }
+  //   if (chunk.context) {
+  //     context += chunk.context;
+  //   }
+  // }
 
-  chatHistory.push(new HumanMessage(state.input));
-  chatHistory.push(new AIMessage(answer));
+  // chatHistory.push(new HumanMessage(state.input));
+  // chatHistory.push(new AIMessage(answer));
+  // console.log("\n");
+
+  return {
+    data: state.data,
+    chat_history: chatHistory,
+    input: state.input,
+  };
 };
 
 const graph = new StateGraph(GraphAnnotation)
@@ -360,15 +367,24 @@ const graph = new StateGraph(GraphAnnotation)
 const memory2 = new MemorySaver();
 const app2 = graph.compile({ checkpointer: memory2 });
 
-// app2
-//   .getGraphAsync()
-//   .then((graph) => {
-//     return graph.drawMermaidPng();
-//   })
-//   .then(async (graphBlob) => {
-//     const bufferArray = await graphBlob.arrayBuffer();
-//     fs.writeFile("graph.png", new Uint8Array(bufferArray));
-//   });
+const generateGraph = async () => {
+  try {
+    const graph = await app2.getGraphAsync();
+
+    const blob = await graph.drawMermaidPng();
+    const image = await blob.arrayBuffer();
+    // console.log("image", image.byteLength);
+    await fs.writeFile("graph.png", new Uint8Array(image));
+  } catch (error) {
+    console.log("error", error);
+  }
+};
+// i want to call this function if graph.png not exist
+fs.access("graph.png").catch(() => {
+  console.log("graph.png not exist");
+  generateGraph();
+});
+
 // Save the mermaid graph
 // 4. Chat loop
 
@@ -393,4 +409,52 @@ async function startChat() {
   ask();
 }
 
-startChat();
+async function startHttpChat() {
+  const app = express();
+  app.use(express.json());
+  app.use(express.urlencoded({ extended: true }));
+  app.use(express.static("public"));
+
+  app.get("/", (req, res) => {
+    res.sendFile(path.join(__dirname, "public", "/index.html"));
+  });
+
+  app.post("/chat", async (req, res) => {
+    res.setHeader("Content-Type", "text/event-stream");
+    // res.setHeader("Content-Type", "text/plain"); // Or text/event-stream if you're doing SSE
+    res.setHeader("Transfer-Encoding", "chunked");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+
+    res.flushHeaders();
+
+    const threadId2 = uuidV4.v4();
+    const config2 = { configurable: { thread_id: threadId2 } };
+    const input = req.body.input;
+
+    res.write("event: connected\n");
+
+    const response = await app2.invoke({ input: input }, config2);
+
+    for await (const data of response.data) {
+      if (data.answer) {
+        process.stdout.write(data.answer);
+        res.write(`${data.answer}`, (error) => {
+          if (error) {
+            res.end(error.message);
+          }
+        });
+      }
+    }
+    res.write("event: done\ndata: completed\n\n");
+    res.end();
+  });
+
+  app.listen(3000, () => {
+    console.log("Server listening on port 3000");
+  });
+}
+
+startHttpChat();
+
+// startChat();
